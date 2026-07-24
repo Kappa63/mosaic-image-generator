@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("MosaicImageGeneration")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+1164c25e2621104a615f24b585e8dc90339a2c6e")]
 [assembly: System.Reflection.AssemblyProductAttribute("MosaicImageGeneration")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MosaicImageGeneration")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
