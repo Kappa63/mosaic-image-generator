@@ -18,3 +18,4 @@ C:\Users\karee\RiderProjects\MosaicImageGeneration\obj\Debug\net8.0\ref\MosaicIm
 C:\Users\karee\RiderProjects\MosaicImageGeneration\bin\Debug\net8.0\Microsoft.Win32.SystemEvents.dll
 C:\Users\karee\RiderProjects\MosaicImageGeneration\bin\Debug\net8.0\runtimes\win\lib\net8.0\Microsoft.Win32.SystemEvents.dll
 C:\Users\karee\RiderProjects\MosaicImageGeneration\obj\Debug\net8.0\MosaicImageGeneration.sourcelink.json
+C:\Users\karee\RiderProjects\MosaicImageGeneration\bin\Debug\net8.0\ColorMine.dll
