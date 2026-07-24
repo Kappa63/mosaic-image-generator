@@ -1,11 +1,22 @@
 ﻿using System.Drawing;
+using System.Text.Json;
+using System.IO;
 
 namespace MosaicImageGeneration
 {
+	public class ThumbnailData
+	{
+		public string? path { get; set; }
+		public Color avgColor { get; set; }
+	}
+
 	static class Program
 	{
+		
 		private const int _nChunks = 8; // _nChunks * _nChunks
 		private const string _targetImage = "/Pictures/stp.png";
+		private const string _thumbnailDir = "/Pictures/thumbnails";
+		private const string _thumbnailDataCache = "/Pictures/cache.json";
 		private const string _outputPath = "/Pictures/test/";
 		
 		private static void Main(string[] args)
@@ -13,13 +24,21 @@ namespace MosaicImageGeneration
 			var userDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 			var bmp = new Bitmap(userDir+_targetImage);
 
-			var chunks = bmp.GenerateChunks();
+			if (!File.Exists(userDir+_thumbnailDataCache))
+				populateThumbnailCache(userDir+_thumbnailDir, userDir+_thumbnailDataCache);
+			
+			var thumbnailImages = JsonSerializer.Deserialize<List<ThumbnailData>>(File.ReadAllText(userDir+_thumbnailDataCache));
 
-			var x = 0;
-			foreach (var chunk in chunks)
-			{
-				chunk.Save(userDir+_outputPath + x++ + ".png");
-			}
+			var chunks = bmp.GenerateChunks();
+		}
+
+		private static void populateThumbnailCache(string thumbnailDir, string outputPath)
+		{
+			var result = new List<ThumbnailData>();
+			foreach (var file in Directory.GetFileSystemEntries(thumbnailDir, "*", SearchOption.AllDirectories))
+				if (file.EndsWith(".jpg") || file.EndsWith(".jpeg") || file.EndsWith(".png"))
+					result.Add(new ThumbnailData{path = file, avgColor = new Bitmap(file).AverageColor()});	
+			File.WriteAllText(outputPath, JsonSerializer.Serialize(result));
 		}
 
 		private static List<Bitmap> GenerateChunks(this Bitmap img)
@@ -49,6 +68,7 @@ namespace MosaicImageGeneration
 			ulong bSum = 0;
 			
 			for (var w = 0; w < img.Width; w++)
+			{
 				for (var h = 0; h < img.Height; h++)
 				{
 					var pixel = img.GetPixel(w, h);
@@ -56,6 +76,7 @@ namespace MosaicImageGeneration
 					gSum += pixel.G;
 					bSum += pixel.B;
 				}
+			}
 			var avgR = (int) (rSum / (ulong)(img.Width*img.Height));
 			var avgG = (int) (gSum / (ulong)(img.Width*img.Height));
 			var avgB = (int) (bSum / (ulong)(img.Width*img.Height));
