@@ -33,11 +33,47 @@ The foundation was per-pixel color analysis (`AverageColor`) and splitting the t
 Scaling the color analysis to a ~10,000-image dataset (Caltech-101) made per-run analysis infeasible, so results are computed once and persisted to `cache.json` via `System.Text.Json`. Matching each tile to a thumbnail required a perceptually meaningful color distance: plain RGB Euclidean distance ranks colors poorly against human perception, so the ColorMine library's CIE76 Delta-E comparison was used for nearest-color selection.
 
 **Milestone 3 — Mosaic assembly and resource management** (commit `mosaic`).
-The stitcher inverts the chunking transform, scaling each selected thumbnail into its grid cell. Two hard-won lessons: first, `DrawImage` only *scales* when the source rectangle spans the full source bitmap and the destination rectangle has the cell size — the initial version accidentally cropped thumbnail corners and sized the output from a thumbnail's resolution, producing a 220 MB image. Second, `System.Drawing.Bitmap` wraps unmanaged GDI+ memory the garbage collector barely sees, causing crashes at 100×100 grids (10,000 tiles); the fix made bitmap lifetimes explicit — chunks disposed immediately after averaging, thumbnails loaded and disposed per loop iteration via `using var`, and the stitcher redesigned to take file paths instead of pre-loaded bitmaps.
+The stitcher inverts the chunking transform, scaling each selected thumbnail into its grid cell. Two hard-won lessons: first, `DrawImage` only *scales* when the source rectangle spans the full source bitmap and the destination rectangle has the cell size — the initial version accidentally cropped thumbnail corners and sized the output from a thumbnail's resolution, producing a 220 MB image. Second, `System.Drawing.Bitmap` wraps unmanaged GDI+ memory the garbage collector barely sees; bitmap lifetimes were therefore made explicit — chunks disposed immediately after averaging, thumbnails loaded and disposed per loop iteration via `using var`, and the stitcher redesigned to take file paths instead of pre-loaded bitmaps, keeping peak memory independent of grid size.
+
+## Test
+
+Testing was performed as manual end-to-end runs against known inputs, verifying each pipeline stage through its observable output:
+
+- **Functional correctness:** generated mosaics were visually compared against the target image at multiple grid sizes (8×8, 50×50, 100×100, 150×150) — the mosaic must reproduce the target's large-scale structure and color regions, with individual tiles recognizable as distinct photographs. Output dimensions were verified to equal `(targetWidth/n)·n × (targetHeight/n)·n`.
+- **Cache behavior:** first run builds `cache.json` from the thumbnail directory; subsequent runs load it without re-analysis (verified via console output and run time). Deleting the cache triggers a rebuild.
+- **CLI overrides:** each flag (`--target=`, `--thumbnails=`, `--cache=`, `--output=`, `--chunks=`) was tested individually and combined; invalid `--chunks` values (non-numeric, zero, negative) exit with an error message. Unknown flags exit with a usage hint.
+- **Output naming:** repeated runs produce `output.png`, `output_1.png`, `output_2.png`, … without overwriting.
+
+### Runtime performance
+
+Measured with `System.Diagnostics.Stopwatch` around each pipeline stage (Release build, self-contained win-x64). Thumbnail library: Caltech-101, ~9,100 images.
+
+| Stage | 25×25 (625 tiles) | 50×50 (2,500 tiles) | 100×100 (10,000 tiles) |
+|---|---|---|---|
+| Cache build (first run only, grid-independent) | 203.4 s | 203.4 s | 203.4 s |
+| Chunking | 0.1 s | 0.1 s | 0.2 s |
+| Average colors | 0.2 s | 0.1 s | 0.2 s |
+| Best-fit matching | 1.2 s | 4.3 s | 17.8 s |
+| Stitching | 0.4 s | 1.4 s | 5.6 s |
+| **Total (cached)** | **1.9 s** | **5.9 s** | **23.8 s** |
+
+A repeated 50×50 run produced near-identical timings (4.3 s matching, 1.4 s stitching), confirming measurement stability. The measurements match the complexity analysis: matching scales quadratically with grid size and linearly with library size — O(n² · m), one full library scan per tile — growing ~4× per grid-size doubling (1.2 → 4.3 → 17.8 s) and dominating total runtime. Stitching shows the same ~4× quadratic growth, as thumbnail decodes equal the tile count. Chunking and color averaging are effectively constant across grid sizes, since the total pixel count they process (the whole target image) is independent of how finely it is subdivided. The one-time cache build dominates the first run (~9,100 thumbnails analyzed per-pixel via `GetPixel`), which is precisely what the persistent cache amortizes away.
+
+**Test data provided with the submission:** the target image (`docs/example-target.jpg`), a generated result (`docs/example-output.png`), and the thumbnail dataset reference (Caltech-101, <https://www.kaggle.com/datasets/imbikramsaha/caltech-101>) with the generated `cache.json`.
+
+## Proof of Edge Cases
+
+**Most challenging edge case: a stale thumbnail cache after relocating the thumbnail library (a data-consistency/format error).**
+
+`cache.json` stores *absolute* file paths for each analyzed thumbnail. If the thumbnail directory is moved, renamed, or the cache is copied to another machine, the cache deserializes successfully and all color data remains valid — but every stored path points to a file that no longer exists. The failure is deferred and misleading: the pipeline runs through analysis and matching normally and only crashes deep inside stitching, when GDI+ attempts to load a selected thumbnail and throws its generic `ArgumentException: Parameter is not valid` (GDI+ maps I/O failures, decode failures, and invalid arguments onto the same exception, with no path information). The bug is also *intermittent from the user's perspective*: it only manifests when a stale path is actually selected as a best-fit winner, which depends on the target image — this made it genuinely difficult to diagnose.
+
+**Handling:** the cache is validated at load time. After deserialization, the program probes whether the cached thumbnail paths still exist on disk; if not, it reports the cache as stale, rebuilds it from the configured thumbnail directory, and reloads. Cache invalidation is also available manually (delete `cache.json`) and per-run via the `--cache=` flag, which allows separate caches for separate thumbnail libraries.
+
+**Technical justification:** validation happens at the single choke point where cached data enters the pipeline, which is the earliest moment staleness is detectable — failing (and self-healing) there converts a cryptic GDI+ crash after minutes of processing into an immediate, explained rebuild. Probing the first cached path is used as a representative check: relocation invalidates all paths simultaneously, so one probe detects the condition at zero cost; exhaustive per-file probing was rejected as ~10,000 filesystem hits on every start to detect a condition that is all-or-nothing in practice. Rebuilding automatically (rather than merely erroring) is justified because the rebuild is deterministic, needs no user decision, and the one-time cost is preferable to a crash with an unactionable message. **Known limitation:** the single-probe check targets wholesale relocation and does not detect *individual* changes to the library — a single deleted or renamed thumbnail passes validation (and crashes only if it is selected as a best-fit winner), and newly added images are not picked up until the cache is manually invalidated (delete `cache.json` or point `--cache=` at a fresh file). Detecting these cases would require the rejected exhaustive probing plus a directory diff on every start; since the thumbnail library is treated as a static dataset, this cost was not considered justified.
 
 ## AI Usage and Audit Log
 
-AI tool used: **Claude (Anthropic)**, via chat, as a pair-programming assistant. All AI-suggested code was reviewed, adapted, and integrated manually; the overall design (pipeline stages, ColorMine matching, caching) and the initial implementation were written by me.
+AI tool used: **Claude (Anthropic)**, via chat, as a pair-programming assistant. All AI-suggested code was reviewed, adapted, and integrated manually; the overall design (pipeline stages, ColorMine matching, caching) and the initial implementation were written by me. AI also assisted in drafting and structuring this documentation itself, based on the actual development conversation; the content was reviewed and corrected by me.
 
 ### For which parts of the code did I use AI?
 
@@ -46,8 +82,9 @@ AI tool used: **Claude (Anthropic)**, via chat, as a pair-programming assistant.
 - **`GetOutputPath`** — incrementing output filenames (`output.png`, `output_1.png`, …).
 - **`ParseArgs`** — the CLI flag parsing pattern (`--key=value` with `IndexOf('=')` slicing) including `--chunks` integer validation.
 - **Path handling** — switching from user-profile-relative paths to `AppContext.BaseDirectory` + `Path.Combine` for a portable exe.
+- **Cache staleness validation** — the load-time probe/rebuild handling described under *Proof of Edge Cases*.
 - **Debugging assistance** — interpreting GDI+ exception stack traces; suggesting the try/catch wrapper that prints the failing thumbnail path.
-- Not code, but AI-assisted: the `dotnet publish` configuration and the GitHub→GitLab migration procedure.
+- Not code, but AI-assisted: the `dotnet publish` configuration, the GitHub→GitLab migration procedure, and this documentation.
 
 ### Prompt/response documentation
 
@@ -66,4 +103,4 @@ The full transcripts are available; representative excerpts:
 
 **A satisfactory solution:** the 220 MB output bug (row 3). I pasted the full program and the symptom; the AI immediately identified the actual root cause — `StitchMosaic`'s parameter was *named* `chunks` but at the call site received full-resolution thumbnail bitmaps, so `chunks[0].Width` silently meant "width of an arbitrary thumbnail," inflating the output to ~96,000 px wide while the corner-cropping source rectangle prevented any scaling. The proposed fix (pass cell dimensions computed from the target image; use each thumbnail's full bounds as the source rect) was correct and I integrated it after a few clarifying questions.
 
-**Where the AI was wrong and how it was corrected:** during the `Parameter is not valid` crash (row 6), the AI's first diagnosis was GDI handle exhaustion at the 10,000-object limit, and its second was intermittent memory pressure. I pushed back with evidence — the program had previously run at 100×100 chunks multiple times — and a later stack trace showed the failure inside `Bitmap..ctor(String filename)`, i.e. while loading a *thumbnail file*, even at only 8×8 chunks. The AI then revised its diagnosis (a corrupt/unloadable thumbnail file or a stale absolute path in `cache.json`, selected only for certain targets — which fit the intermittency), retracted its earlier GDI-handle explanation as mechanically wrong, and supplied a try/catch wrapper printing the failing path to confirm it. The episode demonstrates both the value of providing the AI with exact stack traces and the necessity of challenging its hypotheses with observed evidence rather than accepting the first confident explanation.
+**Where the AI was wrong and how it was corrected:** during an intermittent `ArgumentException: Parameter is not valid` crash (see *Proof of Edge Cases*), the AI's first diagnosis was GDI handle exhaustion at the 10,000-object limit, and its second was intermittent memory pressure. I pushed back with evidence — the program had previously run at 100×100 chunks multiple times — and a later stack trace showed the failure inside `Bitmap..ctor(String filename)`, i.e. while loading a *thumbnail file*, even at only 8×8 chunks. The AI revised its diagnosis to a corrupt thumbnail file *or* stale absolute paths in `cache.json` and supplied a try/catch wrapper printing the failing path. The actual root cause, which I confirmed, was the stale cache: I had moved the application folder without regenerating `cache.json`, so its absolute thumbnail paths pointed at the old location. Regenerating the cache resolved the crash entirely (verified up to 150×150 grids), and the load-time staleness validation was added to prevent recurrence. The episode demonstrates both the value of providing the AI with exact stack traces and the necessity of challenging its hypotheses with observed evidence rather than accepting the first confident explanation.
