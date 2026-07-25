@@ -15,33 +15,93 @@ namespace MosaicImageGeneration
 
 	static class Program
 	{
-		private const int _nChunks = 100; // _nChunks * _nChunks
-		private const string _targetImage = "/Pictures/stp.png";
-		private const string _thumbnailDir = "/Pictures/thumbnails";
-		private const string _thumbnailDataCache = "/Pictures/cache.json";
-		private const string _outputPath = "/Pictures/results/";
+		private static readonly string _baseDir = AppContext.BaseDirectory;
+		
+		private static int _nChunks = 100; // _nChunks * _nChunks
+		
+		private static string _targetImage = Path.Combine(_baseDir, "target.jpg");
+		private static string _thumbnailDir = Path.Combine(_baseDir, "thumbnails");
+		private static string _thumbnailDataCache = Path.Combine(_baseDir, "cache.json");
+		private static string _outputDir = Path.Combine(_baseDir, "results");
 		
 		private static void Main(string[] args)
 		{
-			var userDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-			var bmp = new Bitmap(userDir+_targetImage);
+			Console.WriteLine("Mosaic Image Generation");
+			ParseArgs(args);
+			
+			Console.WriteLine("Checking for thumbnail cache.");
+			if (!File.Exists(_thumbnailDataCache))
+			{
+				Console.WriteLine($"cache.json not available in {_thumbnailDataCache}.");
+				Console.WriteLine($"Creating thumbnail cache using the thumbnails in {_thumbnailDir}. This will take a while.");
+				populateThumbnailCache(_thumbnailDir, _thumbnailDataCache);
+			}
+			Console.WriteLine($"Loading thumbnail cache from {_thumbnailDataCache}");
+			var thumbnailImages = JsonSerializer.Deserialize<List<ThumbnailData>>(File.ReadAllText(_thumbnailDataCache))!;
+			
+			Console.WriteLine($"Loading target image from {_targetImage}");
+			var bmp = new Bitmap(_targetImage);
 			var chunkWidth = bmp.Width / _nChunks;
 			var chunkHeight = bmp.Height / _nChunks;
 
-			if (!File.Exists(userDir+_thumbnailDataCache))
-				populateThumbnailCache(userDir+_thumbnailDir, userDir+_thumbnailDataCache);
-			
-			var thumbnailImages = JsonSerializer.Deserialize<List<ThumbnailData>>(File.ReadAllText(userDir+_thumbnailDataCache))!;
-
+			Console.WriteLine($"Chunking image into {_nChunks} chunks...");
 			var chunks = bmp.GenerateChunks(chunkWidth, chunkHeight);
+			bmp.Dispose();
 
-			var chunkColorAverages = chunks.Select(c => c.AverageColor()).ToList();
+			Console.WriteLine("Finding chunk color averages.");
+			var chunkColorAverages = chunks.Select(c =>
+			{
+				var avgColor = c.AverageColor();
+				c.Dispose();
+				return avgColor;
+			}).ToList();
 			
+			
+			Console.WriteLine("Finding the best thumbnails.");
 			var mosaicThumbnails = BestFitThumbnails(chunkColorAverages, thumbnailImages);
-			
-			var finalMosaicImage = StitchMosaic(mosaicThumbnails.Select(mt => new Bitmap(mt)).ToList(), chunkWidth, chunkHeight);
-			
-			finalMosaicImage.Save(userDir+_outputPath+"output.png");
+
+			Console.WriteLine("Stitching the thumbnails.");
+			var finalMosaicImage = StitchMosaic(mosaicThumbnails, chunkWidth, chunkHeight);
+
+			var finalOutputPath = GetOutputPath(_outputDir);
+			Console.WriteLine($"Saving the generated mosaic to {finalOutputPath}");
+			finalMosaicImage.Save(finalOutputPath);
+			finalMosaicImage.Dispose();
+			Console.WriteLine("Done.");
+		}
+		
+		private static void ParseArgs(string[] args)
+		{
+			foreach (var arg in args)
+			{
+				if (!arg.StartsWith("--") || !arg.Contains('='))
+					continue;
+
+				var split = arg.IndexOf('=');
+				var key = arg[2..split].ToLowerInvariant();
+				var value = arg[(split + 1)..].Trim('"');
+
+				switch (key)
+				{
+					case "chunks":
+						if (!int.TryParse(value, out var n) || n < 1)
+						{
+							Console.WriteLine($"Invalid value for --chunks: '{value}' (must be a positive integer)");
+							Environment.Exit(1);
+						}
+						_nChunks = n;
+						break;
+					case "target":     _targetImage = value; break;
+					case "thumbnails": _thumbnailDir = value; break;
+					case "cache":      _thumbnailDataCache = value; break;
+					case "output":     _outputDir = value; break;
+					default:
+						Console.WriteLine($"Unknown option: --{key}");
+						Console.WriteLine("Options: --target= --thumbnails= --cache= --output=");
+						Environment.Exit(1);
+						break;
+				}
+			}
 		}
 		
 		private static Rgb AverageColor(this Bitmap img)
@@ -114,7 +174,7 @@ namespace MosaicImageGeneration
 			return result;
 		}
 	
-		private static Bitmap StitchMosaic(List<Bitmap> chunks, int chunkWidth, int chunkHeight)
+		private static Bitmap StitchMosaic(List<string> chunks, int chunkWidth, int chunkHeight)
 		{
 			var result = new Bitmap(chunkWidth * _nChunks, chunkHeight * _nChunks);
 
@@ -123,12 +183,26 @@ namespace MosaicImageGeneration
 			for (var widthChunkNum = 0; widthChunkNum < _nChunks; widthChunkNum++)
 				for (var heightChunkNum = 0; heightChunkNum < _nChunks; heightChunkNum++)
 				{
-					graphics.DrawImage(chunks[i++], 
-					new Rectangle(widthChunkNum * chunkWidth, heightChunkNum * chunkHeight, chunkWidth, chunkHeight),
-					 new Rectangle(0, 0, chunkWidth, chunkHeight), GraphicsUnit.Pixel);
+					using var thumb = new Bitmap(chunks[i++]);
+					
+					graphics.DrawImage(thumb,
+						new Rectangle(widthChunkNum * chunkWidth, heightChunkNum * chunkHeight, chunkWidth, chunkHeight),
+						new Rectangle(0, 0, thumb.Width, thumb.Height),   // full thumbnail → scaled into the cell
+						GraphicsUnit.Pixel);
 				}
 
 			return result;
+		}
+		
+		private static string GetOutputPath(string baseDir)
+		{
+			var path = Path.Combine(baseDir, "output.png");
+			
+			var counter = 1;
+			while (File.Exists(path))
+				path = Path.Combine(baseDir, $"output_{counter++}.png");
+
+			return path;
 		}
 	}
 }
