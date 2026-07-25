@@ -29,25 +29,40 @@ namespace MosaicImageGeneration
 			Console.WriteLine("Mosaic Image Generation");
 			ParseArgs(args);
 			
+			var sw = System.Diagnostics.Stopwatch.StartNew();
+			
 			Console.WriteLine("Checking for thumbnail cache.");
 			if (!File.Exists(_thumbnailDataCache))
 			{
 				Console.WriteLine($"cache.json not available in {_thumbnailDataCache}.");
 				Console.WriteLine($"Creating thumbnail cache using the thumbnails in {_thumbnailDir}. This will take a while.");
 				populateThumbnailCache(_thumbnailDir, _thumbnailDataCache);
+				Console.WriteLine($"[TIMING] Cache build: {sw.Elapsed.TotalSeconds:F1}s");
 			}
+			
+			sw.Restart();
 			Console.WriteLine($"Loading thumbnail cache from {_thumbnailDataCache}");
 			var thumbnailImages = JsonSerializer.Deserialize<List<ThumbnailData>>(File.ReadAllText(_thumbnailDataCache))!;
+			
+			if (thumbnailImages.Count == 0 || !File.Exists(thumbnailImages[0].path))
+			{
+				Console.WriteLine("Cache is stale (thumbnail paths no longer exist). Rebuilding. This will take a while.");
+				populateThumbnailCache(_thumbnailDir, _thumbnailDataCache);
+				thumbnailImages = JsonSerializer.Deserialize<List<ThumbnailData>>(File.ReadAllText(_thumbnailDataCache))!;
+			}
 			
 			Console.WriteLine($"Loading target image from {_targetImage}");
 			var bmp = new Bitmap(_targetImage);
 			var chunkWidth = bmp.Width / _nChunks;
 			var chunkHeight = bmp.Height / _nChunks;
 
+			sw.Restart();
 			Console.WriteLine($"Chunking image into {_nChunks} chunks...");
 			var chunks = bmp.GenerateChunks(chunkWidth, chunkHeight);
 			bmp.Dispose();
+			Console.WriteLine($"[TIMING] Chunking: {sw.Elapsed.TotalSeconds:F1}s");
 
+			sw.Restart();
 			Console.WriteLine("Finding chunk color averages.");
 			var chunkColorAverages = chunks.Select(c =>
 			{
@@ -55,13 +70,17 @@ namespace MosaicImageGeneration
 				c.Dispose();
 				return avgColor;
 			}).ToList();
-			
-			
+			Console.WriteLine($"[TIMING] Average colors: {sw.Elapsed.TotalSeconds:F1}s");
+
+			sw.Restart();
 			Console.WriteLine("Finding the best thumbnails.");
 			var mosaicThumbnails = BestFitThumbnails(chunkColorAverages, thumbnailImages);
-
+			Console.WriteLine($"[TIMING] Matching: {sw.Elapsed.TotalSeconds:F1}s");
+			
+			sw.Restart();
 			Console.WriteLine("Stitching the thumbnails.");
 			var finalMosaicImage = StitchMosaic(mosaicThumbnails, chunkWidth, chunkHeight);
+			Console.WriteLine($"[TIMING] Stitching: {sw.Elapsed.TotalSeconds:F1}s");
 
 			var finalOutputPath = GetOutputPath(_outputDir);
 			Console.WriteLine($"Saving the generated mosaic to {finalOutputPath}");
@@ -69,6 +88,7 @@ namespace MosaicImageGeneration
 			finalMosaicImage.Dispose();
 			Console.WriteLine("Done.");
 		}
+		
 		
 		private static void ParseArgs(string[] args)
 		{
